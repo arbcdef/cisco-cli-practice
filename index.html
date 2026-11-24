@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cisco IOS CLI</title>
+<style>
+:root{--bg:#f4f4f2;--fg:#1d1f21;--mut:#6b7078;--g:#0b7a1e;--y:#8a5a00;--c:#0a6a94;--sb:#1d1f21;--sbt:#f4f4f2;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0c0c0c;--fg:#cccccc;--mut:#767676;--g:#16c60c;--y:#f9f1a5;--c:#61d6d6;--sb:#cccccc;--sbt:#0c0c0c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0c0c0c;--fg:#cccccc;--mut:#767676;--g:#16c60c;--y:#f9f1a5;--c:#61d6d6;--sb:#cccccc;--sbt:#0c0c0c;color-scheme:dark}
+*,*:before,*:after{box-sizing:inherit}
+html{height:100%;background:var(--bg);scroll-padding-top:env(safe-area-inset-top,0px)}
+body{height:100%;margin:0;display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:15px/1.4 "Cascadia Mono",Consolas,"Lucida Console","Courier New",monospace}
+#sb{flex:none;padding:2px 10px;background:var(--sb);color:var(--sbt);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#term{flex:1;min-height:0;overflow:auto;padding:8px 10px 14px}
+#term div{white-space:pre-wrap;word-break:break-all}
+.in{display:flex}
+.in input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:inherit;font:inherit;padding:0;caret-color:var(--fg)}
+.g{color:var(--g)}.y{color:var(--y)}.c{color:var(--c)}.m{color:var(--mut)}
+::selection{background:var(--fg);color:var(--bg)}
+@media(max-width:820px){body{font-size:16px}#sb{font-size:12px}}
+</style>
+</head>
+<body>
+<div id="sb"></div>
+<main id="term"><div id="out"></div><div class="in"><span id="pr"></span><input id="cmd" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Terminal"></div></main>
+<script>
+const $=s=>document.querySelector(s),fam=['conf','if','line','vlan','dhcp','ospf'],BAD="% Invalid input detected at '^' marker.";
+const okIp=x=>/^(\d{1,3}\.){3}\d{1,3}$/.test(x)&&x.split('.').every(n=>+n<=255);
+const nn=x=>x.split('.').reduce((a,b)=>a*256+ +b,0),sn=v=>[24,16,8,0].map(k=>(v>>>k)&255).join('.');
+const okMask=x=>okIp(x)&&/^1*0*$/.test(nn(x).toString(2).padStart(32,'0'));
+const netOf=(ip,m)=>sn((nn(ip)&nn(m))>>>0),plen=m=>nn(m).toString(2).replace(/0/g,'').length;
+function normIf(s){s=s.replace(/\s+/g,'');let m;const q='(\\d+(?:\\/\\d+)*(?:\\.\\d+)?)';
+ for(const[r,n]of[['gigabitethernet|gigabit|gig|gi|g','GigabitEthernet'],['fastethernet|fast|fa|f','FastEthernet'],['serial|se|s','Serial']])if(m=s.match(new RegExp('^('+r+')'+q+'$','i')))return n+m[2];
+ if(m=s.match(/^vlan(\d+)$/i))return'Vlan'+m[1];return null}
+const SW=[...Array(24)].map((_,i)=>'FastEthernet0/'+(i+1)).concat('GigabitEthernet0/1','GigabitEthernet0/2');
+const DEV={router:{n:'Router',ifs:['GigabitEthernet0/0','GigabitEthernet0/1','Serial0/0/0']},switch:{n:'Switch',ifs:SW}};
+const mkIf=up=>({ip:'',mask:'',up,desc:'',vlan:1,acc:false,tr:false,enc:0,acl:{}});
+function fresh(L){const sw=L.dev==='switch',s={dev:L.dev,host:DEV[L.dev].n,secret:'',pass:'',con:{},vty:{},enc:false,banner:'',ifs:{},vlans:{1:'default'},routes:[],gw:'',saved:false,mode:'boot',ctx:null,line:null,dom:'',users:{},rsa:0,nodns:false,pings:{},shown:{},dhcp:{},excl:[],ospf:null,acl:{},pend:false};
+ DEV[L.dev].ifs.forEach(n=>{s.ifs[n]=mkIf(sw)});if(sw)s.ifs.Vlan1=mkIf(false);return s}
+function getIf(s,n){if(s.ifs[n])return s.ifs[n];if((s.dev==='switch'&&/^Vlan\d+$/.test(n))||(s.dev==='router'&&/\.\d+$/.test(n)&&s.ifs[n.replace(/\.\d+$/,'')]))return s.ifs[n]=mkIf(n.includes('.'));return null}
+const E=(s,f)=>{s.ctx.forEach(n=>{f(getIf(s,n))})};
+function intf(a,s){const r=a[0].match(/^range\s+([a-z]+\d+\/)(\d+)\s*-\s*(?:[a-z]*\d+\/)?(\d+)$/i);let names=[];
+ if(r){for(let i=+r[2];i<=+r[3];i++)names.push(normIf(r[1]+i))}else names=[normIf(a[0])];
+ names=names.map(n=>n&&getIf(s,n)?n:null);
+ if(!names.length||names.includes(null))return BAD;s.mode='if';s.ctx=names}
+function brief(s){let o='Interface'.padEnd(23)+'IP-Address'.padEnd(16)+'OK? Method Status'.padEnd(29)+'Protocol';
+ for(const[n,i]of Object.entries(s.ifs))o+='\n'+n.padEnd(23)+(i.ip||'unassigned').padEnd(16)+'YES '+(i.ip?'manual':'unset').padEnd(7)+(i.up?'up':'administratively down').padEnd(22)+(i.up?'up':'down');
+ return o}
+const sh=n=>n.replace('FastEthernet','Fa').replace('GigabitEthernet','Gi');
+function vlans(s){let o='VLAN Name                             Status    Ports\n---- -------------------------------- --------- -------------------------------';
+ Object.keys(s.vlans).map(Number).sort((a,b)=>a-b).forEach(v=>{const p=Object.keys(s.ifs).filter(n=>!/^Vlan/.test(n)&&s.ifs[n].vlan===v).map(sh).join(', ');o+='\n'+String(v).padEnd(5)+s.vlans[v].padEnd(33)+'active    '+p});
+ return o}
+function route(s){const d=s.routes.find(r=>r.startsWith('0.0.0.0 0.0.0.0 ')),o=['Codes: C - connected, S - static, O - OSPF','','Gateway of last resort is '+(d?d.split(' ')[2]+' to network 0.0.0.0':'not set'),''];
+ for(const[n,i]of Object.entries(s.ifs))if(i.ip&&i.up)o.push('C    '+netOf(i.ip,i.mask)+'/'+plen(i.mask)+' is directly connected, '+n);
+ s.routes.forEach(r=>{const[x,m,g]=r.split(' ');o.push((x==='0.0.0.0'&&m==='0.0.0.0'?'S*   ':'S    ')+x+'/'+plen(m)+' [1/0] via '+g)});
+ return o.join('\n')}
+function runcfg(s){const sw=s.dev==='switch',pw=p=>s.enc?'7 0822455D0A16':p,o=['Building configuration...','','Current configuration : 1024 bytes','!'];
+ if(s.enc)o.push('service password-encryption');
+ o.push('!','hostname '+s.host,'!');
+ if(s.secret)o.push('enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0');
+ if(s.pass)o.push('enable password '+pw(s.pass));
+ if(s.nodns)o.push('no ip domain-lookup');
+ if(s.dom)o.push('ip domain-name '+s.dom);
+ Object.keys(s.users).forEach(u=>o.push('username '+u+' secret 5 $1$buz0$kF4.Dq2VuCkO5mh1AUq2s/'));
+ s.excl.forEach(e=>o.push('ip dhcp excluded-address '+e));
+ for(const[k,p]of Object.entries(s.dhcp)){o.push('ip dhcp pool '+k);if(p.net)o.push(' network '+p.net+' '+p.mask);if(p.gw)o.push(' default-router '+p.gw);if(p.dns)o.push(' dns-server '+p.dns);o.push('!')}
+ o.push('!');
+ for(const[n,i]of Object.entries(s.ifs)){const v=/^Vlan/.test(n);
+  if(sw&&!v&&!i.acc&&!i.tr&&i.vlan===1&&!i.desc&&i.up)continue;
+  o.push('interface '+n);
+  if(i.enc)o.push(' encapsulation dot1Q '+i.enc);
+  if(i.desc)o.push(' description '+i.desc);
+  if(i.acc)o.push(' switchport mode access');
+  if(i.vlan!==1)o.push(' switchport access vlan '+i.vlan);
+  if(i.tr)o.push(' switchport mode trunk');
+  if(i.allow)o.push(' switchport trunk allowed vlan '+i.allow);
+  if(i.nat)o.push(' switchport trunk native vlan '+i.nat);
+  if(i.ip)o.push(' ip address '+i.ip+' '+i.mask);else if(!sw||v)o.push(' no ip address');
+  Object.entries(i.acl).forEach(([d,k])=>o.push(' ip access-group '+k+' '+d));
+  if(!i.up)o.push(' shutdown');o.push('!')}
+ if(s.ospf){o.push('router ospf '+s.ospf.id);if(s.ospf.rid)o.push(' router-id '+s.ospf.rid);s.ospf.pas.forEach(p=>o.push(' passive-interface '+p));s.ospf.nets.forEach(x=>o.push(' network '+x));o.push('!')}
+ if(s.gw)o.push('ip default-gateway '+s.gw);
+ s.routes.forEach(r=>o.push('ip route '+r));
+ for(const[k,v]of Object.entries(s.acl))v.forEach(r=>o.push('access-list '+k+' '+r));
+ if(s.banner)o.push('!','banner motd ^C'+s.banner+'^C');
+ [['line con 0',s.con],['line vty 0 4',s.vty]].forEach(([t,l])=>{o.push('!',t);if(l.pw)o.push(' password '+pw(l.pw));if(l.login)o.push(l.local?' login local':' login');if(l.tr)o.push(' transport input '+l.tr)});
+ o.push('!','end');return o.join('\n')}
+function rsa(bits,s){if(s.host===DEV[s.dev].n)return'% Please define a hostname other than '+s.host+'.';if(!s.dom)return'% Please define a domain-name first.';s.rsa=bits;return'The name for the keys will be: '+s.host+'.'+s.dom+'\n% The key modulus size is '+bits+' bits\n% Generating '+bits+' bit RSA keys, keys will be non-exportable...[OK]'}
+function ping(a,s){if(!okIp(a[0]))return'% Unrecognized host or address, or protocol not running.';const hit=Object.values(s.ifs).some(i=>i.ip===a[0]&&i.up);if(hit)s.pings[a[0]]=1;
+ return'Type escape sequence to abort.\nSending 5, 100-byte ICMP Echos to '+a[0]+', timeout is 2 seconds:\n'+(hit?'!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 0/0/0 ms':'.....\nSuccess rate is 0 percent (0/5)')}
+const acl=(s,n,r)=>{if(!/^(permit|deny)\b/.test(r))return BAD;(s.acl[n]=s.acl[n]||[]).push(r)};
+const save=(a,s)=>{s.saved=true;return'Building configuration...\n[OK]'};
+const C=[
+['user','enable',(a,s)=>{if(s.secret||s.pass)s.pend=true;else s.mode='priv'}],
+['priv','disable',(a,s)=>{s.mode='user'}],
+['priv','configure terminal',(a,s)=>{s.mode='conf';return'Enter configuration commands, one per line.  End with CNTL/Z.'}],
+['priv','show running-config',(a,s)=>{s.shown.run=1;return runcfg(s)}],
+['user priv','show ip interface brief',(a,s)=>{s.shown.brief=1;return brief(s)}],
+['user priv','show ip route',(a,s)=>{s.shown.route=1;return route(s)}],
+['user priv','show vlan brief',(a,s)=>s.dev==='switch'?(s.shown.vlan=1,vlans(s)):BAD],
+['user priv','show vlan',(a,s)=>s.dev==='switch'?(s.shown.vlan=1,vlans(s)):BAD],
+['user priv','ping %',ping],
+['priv','copy running-config startup-config',(a,s)=>{s.saved=true;return'Destination filename [startup-config]?\nBuilding configuration...\n[OK]'}],
+['priv','write memory',save],
+['priv','write',save],
+['conf','hostname %',(a,s)=>{s.host=a[0]}],
+['conf','enable secret %',(a,s)=>{s.secret=a[0]}],
+['conf','enable password %',(a,s)=>{s.pass=a[0]}],
+['conf','service password-encryption',(a,s)=>{s.enc=true}],
+['conf','no ip domain-lookup',(a,s)=>{s.nodns=true}],
+['conf','ip domain-name %',(a,s)=>{s.dom=a[0]}],
+['conf','username % secret %',(a,s)=>{s.users[a[0]]=a[1]}],
+['conf','username % password %',(a,s)=>{s.users[a[0]]=a[1]}],
+['conf','crypto key generate rsa',(a,s)=>rsa(512,s)],
+['conf','crypto key generate rsa modulus %',(a,s)=>rsa(+a[0]||512,s)],
+['conf','banner motd *',(a,s)=>{s.banner=a[0].slice(1).split(a[0][0])[0]}],
+['conf','interface *',intf],
+['conf','line console %',(a,s)=>{s.mode='line';s.line=s.con}],
+['conf','line vty % %',(a,s)=>{s.mode='line';s.line=s.vty}],
+['conf','vlan %',(a,s)=>{const v=+a[0];if(s.dev!=='switch'||!/^\d+$/.test(a[0])||v<1||v>4094)return BAD;s.vlans[v]=s.vlans[v]||'VLAN'+a[0].padStart(4,'0');s.mode='vlan';s.ctx=v}],
+['conf','ip route % % %',(a,s)=>{if(!okIp(a[0])||!okMask(a[1])||!okIp(a[2]))return BAD;const r=a.join(' ');if(!s.routes.includes(r))s.routes.push(r)}],
+['conf','ip default-gateway %',(a,s)=>{if(s.dev!=='switch'||!okIp(a[0]))return BAD;s.gw=a[0]}],
+['conf','ip dhcp pool %',(a,s)=>{s.dhcp[a[0]]=s.dhcp[a[0]]||{};s.mode='dhcp';s.ctx=a[0]}],
+['conf','ip dhcp excluded-address %',(a,s)=>{if(!okIp(a[0]))return BAD;s.excl.push(a[0]+' '+a[0])}],
+['conf','ip dhcp excluded-address % %',(a,s)=>{if(!okIp(a[0])||!okIp(a[1]))return BAD;s.excl.push(a[0]+' '+a[1])}],
+['conf','router ospf %',(a,s)=>{s.ospf=s.ospf||{id:a[0],nets:[],pas:[]};s.mode='ospf'}],
+['conf','access-list % % any',(a,s)=>acl(s,a[0],a[1].toLowerCase()+' any')],
+['conf','access-list % % % %',(a,s)=>acl(s,a[0],a[1].toLowerCase()+' '+a[2]+' '+a[3])],
+['line','password %',(a,s)=>{s.line.pw=a[0]}],
+['line','login',(a,s)=>{s.line.login=true;s.line.local=false}],
+['line','login local',(a,s)=>{s.line.login=true;s.line.local=true}],
+['line','transport input %',(a,s)=>{s.line.tr=a[0]}],
+['line','logging synchronous',()=>{}],
+['line','exec-timeout % %',()=>{}],
+['vlan','name %',(a,s)=>{s.vlans[s.ctx]=a[0]}],
+['dhcp','network % %',(a,s)=>{if(!okIp(a[0])||!okMask(a[1]))return BAD;Object.assign(s.dhcp[s.ctx],{net:a[0],mask:a[1]})}],
+['dhcp','default-router %',(a,s)=>{s.dhcp[s.ctx].gw=a[0]}],
+['dhcp','dns-server %',(a,s)=>{s.dhcp[s.ctx].dns=a[0]}],
+['ospf','router-id %',(a,s)=>{s.ospf.rid=a[0]}],
+['ospf','network % % area %',(a,s)=>{if(!okIp(a[0])||!okIp(a[1]))return BAD;s.ospf.nets.push(a[0]+' '+a[1]+' area '+a[2])}],
+['ospf','passive-interface %',(a,s)=>{const n=normIf(a[0]);if(!n||!s.ifs[n])return BAD;s.ospf.pas.push(n)}],
+['if','ip address % %',(a,s)=>{if(!okIp(a[0])||!okMask(a[1]))return BAD;E(s,i=>{i.ip=a[0];i.mask=a[1]})}],
+['if','no shutdown',(a,s)=>{E(s,i=>{i.up=true})}],
+['if','shutdown',(a,s)=>{E(s,i=>{i.up=false})}],
+['if','description *',(a,s)=>{E(s,i=>{i.desc=a[0]})}],
+['if','encapsulation dot1q %',(a,s)=>{if(!s.ctx[0].includes('.')||!/^\d+$/.test(a[0]))return BAD;E(s,i=>{i.enc=+a[0]})}],
+['if','switchport mode access',(a,s)=>{if(s.dev!=='switch')return BAD;E(s,i=>{i.acc=true;i.tr=false})}],
+['if','switchport mode trunk',(a,s)=>{if(s.dev!=='switch')return BAD;E(s,i=>{i.tr=true;i.acc=false})}],
+['if','switchport trunk allowed vlan %',(a,s)=>{E(s,i=>{i.allow=a[0]})}],
+['if','switchport trunk native vlan %',(a,s)=>{E(s,i=>{i.nat=a[0]})}],
+['if','switchport access vlan %',(a,s)=>{const v=+a[0];if(s.dev!=='switch'||!/^\d+$/.test(a[0])||v<1||v>4094)return BAD;let m='';if(!s.vlans[v]){s.vlans[v]='VLAN'+a[0].padStart(4,'0');m='% Access VLAN does not exist. Creating vlan '+v}E(s,i=>{i.vlan=v});return m}],
+['if','ip access-group % %',(a,s)=>{if(!/^(in|out)$/i.test(a[1]))return BAD;E(s,i=>{i.acl[a[1].toLowerCase()]=a[0]})}]
+];
+const inMode=(mm,m)=>mm.split(' ').includes(m),modesFor=s=>['if','line','vlan','dhcp','ospf'].includes(s.mode)?[s.mode,'conf']:[s.mode];
+function walk(toks,modes){let cs=[];modes.forEach(m=>C.forEach(c=>{if(inMode(c[0],m))cs.push({c,p:c[1].split(' ')})}));
+ for(let i=0;i<toks.length;i++){const t=toks[i].toLowerCase();
+  const v=cs.filter(x=>{const j=x.p.indexOf('*');if(j>=0&&j<=i)return true;const w=x.p[i];return w&&(/[%*]/.test(w)||w.startsWith(t))});
+  if(!v.length)return{e:'inv',i};
+  const ws=[...new Set(v.map(x=>x.p[i]).filter(w=>w&&!/[%*]/.test(w)&&w.startsWith(t)))];
+  if(ws.length>1&&!ws.includes(t))return{e:'amb',i};
+  cs=ws.length>1?v.filter(x=>x.p[i]===t||!x.p[i]||/[%*]/.test(x.p[i])):v}
+ return{cs}}
+const pick=(r,n)=>r.cs.find(x=>{const j=x.p.indexOf('*');return j>=0?n>j:x.p.length===n});
+const args=(p,t)=>{const a=[];p.forEach((w,i)=>{if(w==='%')a.push(t[i]);else if(w==='*')a.push(t.slice(i).join(' '))});return a};
+function prompt(s){const m=s.mode;if(m==='boot')return'';
+ const x=m==='if'?(s.ctx.length>1?'(config-if-range)#':s.ctx[0].includes('.')?'(config-subif)#':'(config-if)#'):({user:'>',priv:'#',conf:'(config)#',line:'(config-line)#',vlan:'(config-vlan)#',dhcp:'(dhcp-config)#',ospf:'(config-router)#'})[m];
+ return s.host+x}
+function help(raw){const t=raw.slice(0,-1),sp=!t||/\s$/.test(t),toks=t.trim().split(/\s+/).filter(Boolean),last=sp?'':toks.pop().toLowerCase(),r=walk(toks,modesFor(S)),set=new Set();
+ if(r.e)return'% Unrecognized command';
+ r.cs.forEach(x=>{const w=x.p[toks.length];
+  if(w){if(/[%*]/.test(w)){if(!last)set.add('<value>')}else if(w.startsWith(last))set.add(w)}else if(!last&&pick(r,toks.length)===x)set.add('<cr>')});
+ if(!toks.length){if('exit'.startsWith(last))set.add('exit');if(fam.includes(S.mode)&&'end'.startsWith(last))set.add('end')}
+ return[...set].map(w=>'  '+w).join('\n')||'% Unrecognized command'}
+function tab(){const v=cmd.value;if(!v.trim()||/\s$/.test(v))return;const toks=v.trim().split(/\s+/),last=toks.pop().toLowerCase(),r=walk(toks,modesFor(S));if(r.e)return;
+ const ws=[...new Set(r.cs.map(x=>x.p[toks.length]).filter(w=>w&&!/[%*]/.test(w)&&w.startsWith(last)))];
+ if(ws.length===1)cmd.value=toks.concat(ws[0]).join(' ')+' '}
+/* ---- Activities ---- */
+const G=x=>'GigabitEthernet'+x,F=x=>'FastEthernet0/'+x;
+const up=(s,n,ip,m)=>{const i=s.ifs[n]||{};return i.ip===ip&&i.mask===m&&i.up};
+const rng=(s,a,b,v)=>{for(let i=a;i<=b;i++){const f=s.ifs[F(i)];if(!f||!f.acc||f.vlan!==v)return false}return true};
+const SAVE=['Save configuration','copy running-config startup-config',s=>s.saved];
+const LABS0=[
+{n:'Lab 1 · Basic router configuration',lv:'Beginner',dev:'router',d:'A new router for a small office. Set its identity, basic security, and the LAN interface.',
+ t:[['Change the hostname to R1','hostname R1',s=>s.host==='R1'],['Set the enable secret: cisco123','enable secret cisco123',s=>s.secret==='cisco123'],['Console: password console1 and login','line console 0\npassword console1\nlogin',s=>s.con.pw==='console1'&&s.con.login],['MOTD banner containing “Restricted Access”','banner motd #Restricted Access#',s=>/restricted access/i.test(s.banner)],['Disable DNS lookup','no ip domain-lookup',s=>s.nodns],['G0/0: 192.168.1.1/24 and enabled','interface g0/0\nip address 192.168.1.1 255.255.255.0\nno shutdown',s=>up(s,G('0/0'),'192.168.1.1','255.255.255.0')],SAVE]},
+{n:'Lab 2 · Two-interface router and routes',lv:'Beginner',dev:'router',d:'R2 connects the office LAN to the ISP. Configure the interfaces and routes, then test with ping.',
+ t:[['Change the hostname to R2','hostname R2',s=>s.host==='R2'],['G0/0: description OFFICE-LAN, 10.10.10.1/24, enabled','interface g0/0\ndescription OFFICE-LAN\nip address 10.10.10.1 255.255.255.0\nno shutdown',s=>up(s,G('0/0'),'10.10.10.1','255.255.255.0')&&s.ifs[G('0/0')].desc==='OFFICE-LAN'],['G0/1: 172.16.0.1/30, enabled','interface g0/1\nip address 172.16.0.1 255.255.255.252\nno shutdown',s=>up(s,G('0/1'),'172.16.0.1','255.255.255.252')],['Default route via 172.16.0.2','ip route 0.0.0.0 0.0.0.0 172.16.0.2',s=>s.routes.includes('0.0.0.0 0.0.0.0 172.16.0.2')],['Static route to 192.168.50.0/24 via 10.10.10.2','ip route 192.168.50.0 255.255.255.0 10.10.10.2',s=>s.routes.includes('192.168.50.0 255.255.255.0 10.10.10.2')],['Ping to 10.10.10.1 succeeds','ping 10.10.10.1',s=>s.pings['10.10.10.1']],SAVE]},
+{n:'Lab 3 · VLANs and trunk on a switch',lv:'Intermediate',dev:'switch',d:'Separate the student and teacher networks with VLANs, set up a trunk uplink, and give the switch a management address.',
+ t:[['Change the hostname to SW1','hostname SW1',s=>s.host==='SW1'],['Create VLAN 10 named STUDENTS','vlan 10\nname STUDENTS',s=>s.vlans[10]==='STUDENTS'],['Create VLAN 20 named TEACHERS','vlan 20\nname TEACHERS',s=>s.vlans[20]==='TEACHERS'],['Fa0/1 to Fa0/5: access, VLAN 10','interface range fa0/1 - 5\nswitchport mode access\nswitchport access vlan 10',s=>rng(s,1,5,10)],['Fa0/6 to Fa0/10: access, VLAN 20','interface range fa0/6 - 10\nswitchport mode access\nswitchport access vlan 20',s=>rng(s,6,10,20)],['Gi0/1 as a trunk','interface g0/1\nswitchport mode trunk',s=>s.ifs[G('0/1')].tr],['Interface VLAN 1: 192.168.1.2/24, enabled','interface vlan 1\nip address 192.168.1.2 255.255.255.0\nno shutdown',s=>up(s,'Vlan1','192.168.1.2','255.255.255.0')],['Default gateway 192.168.1.1','ip default-gateway 192.168.1.1',s=>s.gw==='192.168.1.1'],SAVE]},
+{n:'Lab 4 · Inter-VLAN routing (router-on-a-stick)',lv:'Intermediate',dev:'router',d:'One trunk cable from the switch to R1. Create subinterfaces for VLAN 10 and VLAN 20.',
+ t:[['Change the hostname to R1','hostname R1',s=>s.host==='R1'],['G0/0 enabled with no IP address','interface g0/0\nno shutdown',s=>s.ifs[G('0/0')].up&&!s.ifs[G('0/0')].ip],['G0/0.10: dot1Q 10, 192.168.10.1/24','interface g0/0.10\nencapsulation dot1q 10\nip address 192.168.10.1 255.255.255.0',s=>{const i=s.ifs[G('0/0.10')];return!!i&&i.enc===10&&i.ip==='192.168.10.1'&&i.mask==='255.255.255.0'}],['G0/0.20: dot1Q 20, 192.168.20.1/24','interface g0/0.20\nencapsulation dot1q 20\nip address 192.168.20.1 255.255.255.0',s=>{const i=s.ifs[G('0/0.20')];return!!i&&i.enc===20&&i.ip==='192.168.20.1'&&i.mask==='255.255.255.0'}],['View the routing table','show ip route',s=>s.shown.route],['Ping to 192.168.20.1 succeeds','ping 192.168.20.1',s=>s.pings['192.168.20.1']],SAVE]},
+{n:'Lab 5 · SSH remote access',lv:'Intermediate',dev:'router',d:'Replace Telnet with SSH. The router needs a hostname, a domain, a local user, and an RSA key.',
+ t:[['Change the hostname to R1','hostname R1',s=>s.host==='R1'],['Domain name: lab.local','ip domain-name lab.local',s=>s.dom==='lab.local'],['User admin with secret admin123','username admin secret admin123',s=>s.users.admin==='admin123'],['Generate an RSA key of at least 1024 bits','crypto key generate rsa modulus 1024',s=>s.rsa>=1024],['VTY: login local and transport input ssh','line vty 0 4\nlogin local\ntransport input ssh',s=>s.vty.login&&s.vty.local&&s.vty.tr==='ssh'],['Enable service password-encryption','service password-encryption',s=>s.enc],SAVE]},
+{n:'Lab 6 · DHCP server on a router',lv:'Intermediate',dev:'router',d:'R1 hands out IP addresses automatically to the 192.168.10.0/24 LAN.',
+ t:[['G0/0: 192.168.10.1/24, enabled','interface g0/0\nip address 192.168.10.1 255.255.255.0\nno shutdown',s=>up(s,G('0/0'),'192.168.10.1','255.255.255.0')],['Exclude 192.168.10.1 through .10','ip dhcp excluded-address 192.168.10.1 192.168.10.10',s=>s.excl.includes('192.168.10.1 192.168.10.10')],['Create a pool named LAN with network 192.168.10.0/24','ip dhcp pool LAN\nnetwork 192.168.10.0 255.255.255.0',s=>{const p=s.dhcp.LAN;return!!p&&p.net==='192.168.10.0'&&p.mask==='255.255.255.0'}],['Default router 192.168.10.1','default-router 192.168.10.1',s=>!!s.dhcp.LAN&&s.dhcp.LAN.gw==='192.168.10.1'],['DNS server 8.8.8.8','dns-server 8.8.8.8',s=>!!s.dhcp.LAN&&s.dhcp.LAN.dns==='8.8.8.8'],SAVE]},
+{n:'Lab 7 · Basic OSPF',lv:'Advanced',dev:'router',d:'R1 has a link to a neighboring router and one LAN. Run OSPF process 1 in area 0.',
+ t:[['G0/0: 10.0.0.1/30, enabled','interface g0/0\nip address 10.0.0.1 255.255.255.252\nno shutdown',s=>up(s,G('0/0'),'10.0.0.1','255.255.255.252')],['G0/1: 192.168.1.1/24, enabled','interface g0/1\nip address 192.168.1.1 255.255.255.0\nno shutdown',s=>up(s,G('0/1'),'192.168.1.1','255.255.255.0')],['Run OSPF process 1 with router-id 1.1.1.1','router ospf 1\nrouter-id 1.1.1.1',s=>!!s.ospf&&s.ospf.id==='1'&&s.ospf.rid==='1.1.1.1'],['Network 10.0.0.0 wildcard 0.0.0.3 area 0','network 10.0.0.0 0.0.0.3 area 0',s=>!!s.ospf&&s.ospf.nets.includes('10.0.0.0 0.0.0.3 area 0')],['Network 192.168.1.0 wildcard 0.0.0.255 area 0','network 192.168.1.0 0.0.0.255 area 0',s=>!!s.ospf&&s.ospf.nets.includes('192.168.1.0 0.0.0.255 area 0')],['Make G0/1 a passive interface','passive-interface g0/1',s=>!!s.ospf&&s.ospf.pas.includes(G('0/1'))],SAVE]},
+{n:'Lab 8 · Standard ACL',lv:'Advanced',dev:'router',d:'Only the 192.168.1.0/24 LAN may exit through G0/1. Everything else is blocked.',
+ t:[['G0/0: 192.168.1.1/24, enabled','interface g0/0\nip address 192.168.1.1 255.255.255.0\nno shutdown',s=>up(s,G('0/0'),'192.168.1.1','255.255.255.0')],['G0/1: 10.0.0.1/24, enabled','interface g0/1\nip address 10.0.0.1 255.255.255.0\nno shutdown',s=>up(s,G('0/1'),'10.0.0.1','255.255.255.0')],['ACL 10: permit 192.168.1.0 wildcard 0.0.0.255','access-list 10 permit 192.168.1.0 0.0.0.255',s=>!!s.acl[10]&&s.acl[10].includes('permit 192.168.1.0 0.0.0.255')],['ACL 10: deny any','access-list 10 deny any',s=>!!s.acl[10]&&s.acl[10].includes('deny any')],['Apply ACL 10 outbound on G0/1','interface g0/1\nip access-group 10 out',s=>s.ifs[G('0/1')].acl.out==='10'],SAVE]}
+];
+const hn=x=>['Change the hostname to '+x,'hostname '+x,s=>s.host===x];
+const IF=(sh,full,ip,m,d)=>[sh+': '+(d?'description '+d+', ':'')+ip+'/'+plen(m)+', enabled','interface '+sh.toLowerCase()+(d?'\ndescription '+d:'')+'\nip address '+ip+' '+m+'\nno shutdown',s=>up(s,full,ip,m)&&(!d||s.ifs[full].desc===d)];
+const sub=v=>['G0/0.'+v+': dot1Q '+v+', 192.168.'+v+'.1/24','interface g0/0.'+v+'\nencapsulation dot1q '+v+'\nip address 192.168.'+v+'.1 255.255.255.0',s=>{const i=s.ifs[G('0/0.'+v)];return!!i&&i.enc===v&&i.ip==='192.168.'+v+'.1'&&i.mask==='255.255.255.0'}];
+const M24='255.255.255.0',M30='255.255.255.252',CON=['Console: password con123 and login','line console 0\npassword con123\nlogin',s=>s.con.pw==='con123'&&s.con.login];
+const LA={n:'x · Basic switch configuration',lv:'Beginner',dev:'switch',d:'A new access switch. Give it an identity, basic security, and a management address.',t:[hn('SW1'),['Set the enable secret: cisco123','enable secret cisco123',s=>s.secret==='cisco123'],['Console: password console1 and login','line console 0\npassword console1\nlogin',s=>s.con.pw==='console1'&&s.con.login],['MOTD banner containing “Authorized Only”','banner motd #Authorized Only#',s=>/authorized only/i.test(s.banner)],['Disable DNS lookup','no ip domain-lookup',s=>s.nodns],['Interface VLAN 1: 192.168.1.2/24, enabled','interface vlan 1\nip address 192.168.1.2 255.255.255.0\nno shutdown',s=>up(s,'Vlan1','192.168.1.2',M24)],SAVE]};
+const LB={n:'x · Securing a router',lv:'Beginner',dev:'router',d:'Every access point needs a password, and passwords must not be readable in the config.',t:[hn('EDGE'),['Set the enable secret: secret99','enable secret secret99',s=>s.secret==='secret99'],CON,['VTY 0 4: password vty123 and login','line vty 0 4\npassword vty123\nlogin',s=>s.vty.pw==='vty123'&&s.vty.login],['Enable service password-encryption','service password-encryption',s=>s.enc],['MOTD banner containing “Keep Out”','banner motd #Keep Out#',s=>/keep out/i.test(s.banner)],['Check with show running-config (use enable first)','show running-config',s=>s.shown.run],SAVE]};
+const LC={n:'x · Three interfaces and static routes',lv:'Beginner',dev:'router',d:'R3 joins two LANs and a serial link to the ISP. Bring up every interface, then add routes.',t:[hn('R3'),IF('G0/0',G('0/0'),'10.1.1.1',M24,'LAN-A'),IF('G0/1',G('0/1'),'10.1.2.1',M24,'LAN-B'),IF('S0/0/0','Serial0/0/0','203.0.113.1',M30),['Default route via 203.0.113.2','ip route 0.0.0.0 0.0.0.0 203.0.113.2',s=>s.routes.includes('0.0.0.0 0.0.0.0 203.0.113.2')],['Static route to 10.1.3.0/24 via 10.1.2.2','ip route 10.1.3.0 255.255.255.0 10.1.2.2',s=>s.routes.includes('10.1.3.0 255.255.255.0 10.1.2.2')],['Check with show ip interface brief','show ip interface brief',s=>s.shown.brief],SAVE]};
+const LD={n:'x · VLAN basics',lv:'Intermediate',dev:'switch',d:'Split a small switch into two VLANs. No trunk yet, only VLANs and access ports.',t:[hn('SW2'),['Create VLAN 10 named SALES','vlan 10\nname SALES',s=>s.vlans[10]==='SALES'],['Create VLAN 20 named HR','vlan 20\nname HR',s=>s.vlans[20]==='HR'],['Fa0/1 to Fa0/4: access, VLAN 10','interface range fa0/1 - 4\nswitchport mode access\nswitchport access vlan 10',s=>rng(s,1,4,10)],['Fa0/5 to Fa0/8: access, VLAN 20','interface range fa0/5 - 8\nswitchport mode access\nswitchport access vlan 20',s=>rng(s,5,8,20)],['Check with show vlan brief','show vlan brief',s=>s.shown.vlan],SAVE]};
+const LE={n:'x · Three VLANs and a hardened trunk',lv:'Intermediate',dev:'switch',d:'A core switch carries three VLANs on one uplink. Restrict the trunk, change its native VLAN, and shut the unused port.',t:[hn('SW-CORE'),['Create VLAN 10 SALES, 20 ENG, 30 MGMT','vlan 10\nname SALES\nexit\nvlan 20\nname ENG\nexit\nvlan 30\nname MGMT',s=>s.vlans[10]==='SALES'&&s.vlans[20]==='ENG'&&s.vlans[30]==='MGMT'],['Fa0/1 to Fa0/8: access, VLAN 10','interface range fa0/1 - 8\nswitchport mode access\nswitchport access vlan 10',s=>rng(s,1,8,10)],['Fa0/9 to Fa0/16: access, VLAN 20','interface range fa0/9 - 16\nswitchport mode access\nswitchport access vlan 20',s=>rng(s,9,16,20)],['Gi0/1: trunk, allowed VLAN 10,20,30, native VLAN 99','interface g0/1\nswitchport mode trunk\nswitchport trunk allowed vlan 10,20,30\nswitchport trunk native vlan 99',s=>{const i=s.ifs[G('0/1')];return i.tr&&i.allow==='10,20,30'&&i.nat==='99'}],['Shut down the unused port Gi0/2','interface g0/2\nshutdown',s=>!s.ifs[G('0/2')].up],['Interface VLAN 30: 192.168.30.2/24, enabled','interface vlan 30\nip address 192.168.30.2 255.255.255.0\nno shutdown',s=>up(s,'Vlan30','192.168.30.2',M24)],SAVE]};
+const LF={n:'x · Router-on-a-stick with three VLANs',lv:'Advanced',dev:'router',d:'Extend the previous design: one trunk link, three VLAN gateways.',t:[hn('R1'),['G0/0 enabled with no IP address','interface g0/0\nno shutdown',s=>s.ifs[G('0/0')].up&&!s.ifs[G('0/0')].ip],sub(10),sub(20),sub(30),['Ping to 192.168.30.1 succeeds','ping 192.168.30.1',s=>s.pings['192.168.30.1']],SAVE]};
+const pool=(n,net,dns)=>['Pool '+n+': '+net+'.0/24, gateway .1, DNS '+dns,'ip dhcp pool '+n+'\nnetwork '+net+'.0 255.255.255.0\ndefault-router '+net+'.1\ndns-server '+dns,s=>{const p=s.dhcp[n];return!!p&&p.net===net+'.0'&&p.mask===M24&&p.gw===net+'.1'&&p.dns===dns}];
+const LG={n:'x · DHCP for two LANs',lv:'Intermediate',dev:'router',d:'One router serves two networks. Each LAN gets its own pool and DNS server.',t:[IF('G0/0',G('0/0'),'192.168.10.1',M24),IF('G0/1',G('0/1'),'192.168.20.1',M24),['Exclude .1 through .10 in both networks','ip dhcp excluded-address 192.168.10.1 192.168.10.10\nip dhcp excluded-address 192.168.20.1 192.168.20.10',s=>s.excl.includes('192.168.10.1 192.168.10.10')&&s.excl.includes('192.168.20.1 192.168.20.10')],pool('SALES','192.168.10','8.8.8.8'),pool('HR','192.168.20','1.1.1.1'),SAVE]};
+const LH={n:'x · OSPF with three networks',lv:'Advanced',dev:'router',d:'R1 has a LAN and two point-to-point links. Advertise all of them and keep OSPF hellos off the LAN.',t:[IF('G0/0',G('0/0'),'192.168.1.1',M24),IF('G0/1',G('0/1'),'10.0.12.1',M30),IF('S0/0/0','Serial0/0/0','10.0.13.1',M30),['OSPF process 10 with router-id 1.1.1.1','router ospf 10\nrouter-id 1.1.1.1',s=>!!s.ospf&&s.ospf.id==='10'&&s.ospf.rid==='1.1.1.1'],['Advertise all three networks in area 0','network 192.168.1.0 0.0.0.255 area 0\nnetwork 10.0.12.0 0.0.0.3 area 0\nnetwork 10.0.13.0 0.0.0.3 area 0',s=>!!s.ospf&&['192.168.1.0 0.0.0.255','10.0.12.0 0.0.0.3','10.0.13.0 0.0.0.3'].every(x=>s.ospf.nets.includes(x+' area 0'))],['Make G0/0 passive','passive-interface g0/0',s=>!!s.ospf&&s.ospf.pas.includes(G('0/0'))],SAVE]};
+const LI={n:'x · ACL: block one host',lv:'Advanced',dev:'router',d:'Block host 192.168.1.50 but let everyone else through. Rule order matters.',t:[IF('G0/0',G('0/0'),'192.168.1.1',M24),IF('G0/1',G('0/1'),'10.0.0.1',M24),['ACL 5: deny host 192.168.1.50','access-list 5 deny host 192.168.1.50',s=>!!s.acl[5]&&s.acl[5][0]==='deny host 192.168.1.50'],['ACL 5: permit any (after the deny)','access-list 5 permit any',s=>!!s.acl[5]&&s.acl[5][0]==='deny host 192.168.1.50'&&s.acl[5].includes('permit any')],['Apply ACL 5 inbound on G0/0','interface g0/0\nip access-group 5 in',s=>s.ifs[G('0/0')].acl.in==='5'],SAVE]};
+const LJ={n:'x · Capstone: branch router',lv:'Expert',dev:'router',d:'Everything together. Build a complete branch router from scratch.',t:[hn('BRANCH'),['Enable secret cisco123 and password encryption','enable secret cisco123\nservice password-encryption',s=>s.secret==='cisco123'&&s.enc],IF('G0/0',G('0/0'),'192.168.10.1',M24,'LAN'),IF('G0/1',G('0/1'),'10.0.0.2',M30,'WAN'),['DHCP pool LAN: 192.168.10.0/24, gateway .1, exclude .1-.10','ip dhcp excluded-address 192.168.10.1 192.168.10.10\nip dhcp pool LAN\nnetwork 192.168.10.0 255.255.255.0\ndefault-router 192.168.10.1',s=>{const p=s.dhcp.LAN;return s.excl.includes('192.168.10.1 192.168.10.10')&&!!p&&p.net==='192.168.10.0'&&p.gw==='192.168.10.1'}],['OSPF 1: both networks in area 0, G0/0 passive','router ospf 1\nnetwork 192.168.10.0 0.0.0.255 area 0\nnetwork 10.0.0.0 0.0.0.3 area 0\npassive-interface g0/0',s=>!!s.ospf&&s.ospf.nets.includes('192.168.10.0 0.0.0.255 area 0')&&s.ospf.nets.includes('10.0.0.0 0.0.0.3 area 0')&&s.ospf.pas.includes(G('0/0'))],['SSH: domain lab.local, user admin/admin123, RSA 1024, VTY ssh only','ip domain-name lab.local\nusername admin secret admin123\ncrypto key generate rsa modulus 1024\nline vty 0 4\nlogin local\ntransport input ssh',s=>s.dom==='lab.local'&&s.users.admin==='admin123'&&s.rsa>=1024&&s.vty.login&&s.vty.local&&s.vty.tr==='ssh'],['ACL 20: permit 192.168.10.0/24, applied out on G0/1','access-list 20 permit 192.168.10.0 0.0.0.255\ninterface g0/1\nip access-group 20 out',s=>!!s.acl[20]&&s.acl[20].includes('permit 192.168.10.0 0.0.0.255')&&s.ifs[G('0/1')].acl.out==='20'],SAVE]};
+const T=(k,...l)=>l.map(x=>({...(typeof x==='number'?LABS0[x]:x),k}));
+const LABS=[...T('Device basics',0,LA,LB),...T('Interfaces and static routes',1,LC),...T('VLANs and switching',LD,2,LE),...T('Inter-VLAN routing',3,LF),...T('Network services',5,LG,4),...T('Dynamic routing and ACL',6,LH,7,LI),...T('Final project',LJ)];
+LABS.forEach((L,i)=>L.n='Lab '+(i+1)+' · '+L.n.split(' · ')[1]);
+const pt=L=>L.n.split(' · ')[1],pk=i=>pt(LABS[i]);
+const CH=[["Mode dan navigasi", [["enable", "User > ke Privileged #; minta password jika ada"], ["configure terminal", "Dari # masuk ke (config) untuk mengubah pengaturan"], ["exit", "Naik satu level (mis. config-if ke config)"], ["end / Ctrl+Z", "Langsung kembali ke mode #"], ["?", "Daftar command valid; \"show ?\" untuk argumennya"], ["Tab", "Lengkapi command yang diketik sebagian"], ["do show run", "Jalankan command # dari dalam mode config"]]], ["Pengaturan perangkat", [["hostname R1", "Ubah nama perangkat (muncul di prompt)"], ["enable secret cisco123", "Password mode # (tersimpan terenkripsi)"], ["line console 0", "Masuk setting port console; lalu password X dan login"], ["line vty 0 4", "Setting akses remote (Telnet/SSH), 5 sesi"], ["password X  /  login", "Pasang password di line dan wajibkan login"], ["banner motd #teks#", "Pesan peringatan saat login"], ["no ip domain-lookup", "Matikan DNS lookup agar salah ketik tidak menunggu"], ["service password-encryption", "Samarkan password teks biasa di config"]]], ["Interface dan routing", [["interface g0/0", "Masuk setting interface; g0/0.10 = subinterface"], ["ip address A.B.C.D mask", "Beri IP dan subnet mask ke interface"], ["no shutdown", "Aktifkan interface (di router default-nya mati)"], ["description teks", "Beri label pada interface"], ["ip route net mask next-hop", "Rute statis; 0.0.0.0 0.0.0.0 = default route"], ["router ospf 1", "Mulai OSPF proses 1; router-id 1.1.1.1 untuk ID"], ["network A.B.C.D wildcard area 0", "Interface yang ikut OSPF (wildcard = kebalikan mask)"], ["passive-interface g0/0", "Jangan kirim hello OSPF di interface ini"]]], ["Switch dan VLAN", [["vlan 10", "Buat VLAN 10; lalu name STUDENTS"], ["interface range fa0/1 - 5", "Pilih banyak port sekaligus"], ["switchport mode access", "Port untuk satu perangkat (PC)"], ["switchport access vlan 10", "Masukkan port ke VLAN 10"], ["switchport mode trunk", "Port membawa banyak VLAN (antar switch/router)"], ["switchport trunk allowed vlan 10,20", "VLAN yang boleh lewat trunk"], ["switchport trunk native vlan 99", "VLAN tanpa tag di trunk"], ["encapsulation dot1q 10", "Di subinterface: tag VLAN 10 (router-on-a-stick)"], ["ip default-gateway A.B.C.D", "Gateway switch untuk akses manajemen"]]], ["Layanan dan keamanan", [["ip dhcp excluded-address A B", "Rentang IP yang tidak dibagikan DHCP"], ["ip dhcp pool LAN", "Buat pool; isi network, default-router, dns-server"], ["ip domain-name lab.local", "Nama domain (syarat kunci SSH)"], ["username admin secret pass", "Buat user lokal untuk login"], ["crypto key generate rsa modulus 1024", "Buat kunci enkripsi untuk SSH"], ["transport input ssh", "Batasi VTY hanya SSH (dengan login local)"], ["access-list 10 permit net wildcard", "ACL standar: izinkan/tolak berdasar IP sumber"], ["ip access-group 10 out", "Pasang ACL ke interface (in atau out)"]]], ["Verifikasi", [["show running-config", "Konfigurasi yang sedang aktif"], ["show ip interface brief", "Ringkasan IP dan status semua interface"], ["show ip route", "Tabel routing (C = connected, S = static, O = OSPF)"], ["show vlan brief", "Daftar VLAN dan port anggotanya"], ["ping A.B.C.D", "Tes konektivitas ke IP tujuan"], ["copy running-config startup-config", "Simpan konfigurasi agar tidak hilang saat restart"]]]];
+let S,cur=0,hist=[],hi=0,done=[],prog={};try{prog=JSON.parse(localStorage.getItem('pt-prog'))||{}}catch(e){}const sv=()=>{try{localStorage.setItem('pt-prog',JSON.stringify(prog))}catch(e){}};
+const out=$('#out'),term=$('#term'),cmd=$('#cmd');
+try{document.documentElement.dataset.theme=localStorage.getItem('pt-theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}
+const HELP=["# MENU TOOL (diawali titik dua)", "  :help             tampilkan bantuan ini", "  :labs             daftar semua lab per topik, lengkap dengan level dan progress", "  :start <no>       mulai lab nomor <no>, contoh :start 3", "  :next             pindah ke lab berikutnya", "  :tasks            daftar soal di lab aktif, [x] = sudah selesai", "  :hint [no]        tampilkan command jawaban soal <no>; tanpa nomor = soal pertama yang belum selesai", "  :progress         progress total dan per topik, plus saran lab berikutnya", "  :wipe             hapus progress yang tersimpan", "  :cheat [topik]    contekan syntax IOS beserta fungsinya, contoh :cheat vlan", "  :reset            ulangi lab aktif dari awal (konfigurasi dikosongkan)", "  :theme dark|light ganti tema warna", "  :fs               layar penuh (atau F11)", "  :clear            bersihkan layar", "", "# KEYBOARD", "  Tab               lengkapi command yang diketik sebagian", "  ?                 tampilkan command/argumen yang valid, contoh: show ?", "  Panah atas/bawah  riwayat command", "  Ctrl+Z            sama dengan end: langsung kembali ke mode #", "", "# MODE IOS (lihat prompt di kiri)", "  Router>               user mode, hanya bisa lihat sedikit. Ketik: enable", "  Router#               privileged mode: show, ping, copy. Ketik: configure terminal", "  Router(config)#       global config: pengaturan seluruh perangkat", "  Router(config-if)#    config interface (juga -line, -router, -vlan, dhcp-config)", "  exit = naik satu level, end = langsung ke #", "", "# Syntax IOS lengkap dengan fungsinya: ketik :cheat"].join('\n');
+function add(t,c){const d=document.createElement('div');d.textContent=t;if(c)d.className=c;out.append(d);term.scrollTop=term.scrollHeight}
+const bar=(n,t)=>'['+'#'.repeat(Math.round(n/t*16)).padEnd(16,'-')+']';
+function setPr(){$('#pr').textContent=S.pend?'Password: ':prompt(S);cmd.type=S.pend?'password':'text'}
+function chk(){const L=LABS[cur],now=L.t.map(x=>!!x[2](S)),n=now.filter(Boolean).length,tot=L.t.length;
+ now.forEach((k,i)=>{if(k&&!done[i])add('[ OK ] task '+(i+1)+' done: '+L.t[i][0],'g')});
+ if(n===tot&&!done.every(Boolean))add('\n*** LAB COMPLETE *** (:next to continue, :labs to choose a lab)\n','g');
+ done=now;prog[pk(cur)]=Math.max(prog[pk(cur)]||0,n);sv();
+ $('#sb').textContent=' IOS CLI | lab '+(cur+1)+'/'+LABS.length+' '+L.n.split(' · ')[1]+' | '+n+'/'+tot+' '+bar(n,tot)+' '+Math.round(n/tot*100)+'% | :help'}
+function tasks(){const L=LABS[cur];add('# '+L.n+' ['+L.lv+']','c');add(L.d,'m');L.t.forEach((x,i)=>add((done[i]?'[x] ':'[ ] ')+String(i+1).padStart(2)+'. '+x[0],done[i]?'g':''));add('# :hint <no> to see the command','m')}
+function labs(){add('# labs, ordered easy to hard (:start <no>)','c');let k='';LABS.forEach((L,i)=>{if(L.k!==k){k=L.k;add('\n  '+k.toUpperCase(),'m')}const p=prog[pt(L)]||0,t=L.t.length;add((i===cur?'> ':'  ')+String(i+1).padStart(2)+'  '+pt(L).padEnd(40)+L.lv.padEnd(14)+p+'/'+t+(p===t?'  [done]':''),i===cur?'y':p===t?'g':'')})}
+function progress(){const g=L=>prog[pt(L)]||0,tot=LABS.reduce((a,L)=>a+L.t.length,0),dn=LABS.reduce((a,L)=>a+g(L),0),fin=LABS.filter(L=>g(L)===L.t.length).length;
+ add('# overall progress','c');add(bar(dn,tot)+' '+dn+'/'+tot+' tasks ('+Math.round(dn/tot*100)+'%), '+fin+'/'+LABS.length+' labs complete','g');
+ [...new Set(LABS.map(L=>L.k))].forEach(k=>{const l=LABS.filter(L=>L.k===k),a=l.reduce((x,L)=>x+g(L),0),b=l.reduce((x,L)=>x+L.t.length,0);add('  '+k.padEnd(30)+bar(a,b)+' '+a+'/'+b)});
+ const nx=LABS.findIndex(L=>g(L)<L.t.length);add(nx<0?'# every lab is complete!':'# next recommended: :start '+(nx+1),'y')}
+function cheat(q){const r=CH.filter(([t])=>!q||t.toLowerCase().includes(q.toLowerCase()));
+ if(!r.length){add('topics: '+CH.map(x=>x[0]).join(' | '),'y');return}
+ r.forEach(([t,rows])=>{add('\n# '+t,'c');rows.forEach(x=>add('  '+x[0].padEnd(38)+x[1]))})}
+function fs(){const d=document;try{if(d.fullscreenElement)d.exitFullscreen();else d.documentElement.requestFullscreen().catch(()=>add('full screen was blocked. Press F11.','y'))}catch(e){add('press F11 for full screen.','y')}}
+function meta(r){const[c,...a]=r.slice(1).trim().split(/\s+/),k=(c||'help').toLowerCase();
+ if(k==='help')add(HELP,'c');
+ else if(k==='labs')labs();
+ else if(k==='progress'||k==='p')progress();
+ else if(k==='wipe'){prog={};sv();add('saved progress erased','y')}
+ else if(k==='start'){if(LABS[+a[0]-1])load(+a[0]-1);else add('usage: :start <lab no>, see :labs','y')}
+ else if(k==='next')load((cur+1)%LABS.length);
+ else if(k==='tasks')tasks();
+ else if(k==='hint'){const j=a[0]?+a[0]-1:done.findIndex(x=>!x),t=LABS[cur].t[j];if(t)add('# task '+(j+1)+': '+t[0]+'\n'+t[1].replace(/^/gm,'    '),'y');else add(a[0]?'usage: :hint [task no]':'all tasks done. :next for the next lab','y')}
+ else if(k==='reset')load(cur);
+ else if(k==='cheat')cheat(a[0]);
+ else if(k==='clear'||k==='cls')out.innerHTML='';
+ else if(k==='theme'){if(a[0]==='dark'||a[0]==='light'){document.documentElement.dataset.theme=a[0];try{localStorage.setItem('pt-theme',a[0])}catch(e){}}else add('usage: :theme dark|light','y')}
+ else if(k==='fs')fs();
+ else add('unknown command: '+r+' (ketik :help)','y')}
+function load(i,keep){cur=i;const L=LABS[i];S=fresh(L);hist=[];done=L.t.map(()=>false);if(!keep)out.innerHTML='';document.title='IOS CLI - '+L.n.split(' · ')[1];
+ add('');tasks();add('# answer "no" to the initial dialog, then type IOS commands. :help for help.','m');
+ add('\n         --- System Configuration Dialog ---\n\nWould you like to enter the initial configuration dialog? [yes/no]:');setPr();chk();cmd.focus()}
+function go(v){const raw=v.trim();
+ if(raw[0]===':'&&!S.pend){add(v,'c');meta(raw);chk();return}
+ if(S.mode==='boot'){add(v);if(/^n/i.test(raw)){S.mode='user';add('\nPress RETURN to get started!\n')}else add("% Please answer 'yes' or 'no'.\nWould you like to enter the initial configuration dialog? [yes/no]:");setPr();return}
+ if(S.pend){add('Password:');const ok=v===(S.secret||S.pass);S.pend=false;if(ok)S.mode='priv';else add('% Bad secrets');setPr();return}
+ add(prompt(S)+v);if(!raw)return;hist.push(v);hi=hist.length;
+ if(/\?$/.test(raw)){add(help(raw));return}
+ const toks=raw.split(/\s+/),t0=toks[0].toLowerCase(),before=S.mode;let e=null,o,dof=false;
+ if(toks.length===1&&/^(ex|exi|exit)$/.test(t0)){if(before==='priv')S.mode='user';else if(before==='conf')S.mode='priv';else if(fam.includes(before)){S.mode='conf';S.ctx=null}}
+ else if(toks.length===1&&t0==='end'&&fam.includes(before)){S.mode='priv';S.ctx=null}
+ else{let tk=toks,md=modesFor(S);if(t0==='do'&&toks.length>1&&fam.includes(before)){tk=toks.slice(1);md=['priv'];dof=true}
+  const r=walk(tk,md),x=r.e?null:pick(r,tk.length);
+  if(x){o=x.c[2](args(x.p,tk),S);if(!dof&&fam.includes(before))S.saved=false}else e=r.e?r:{e:'inc'}}
+ if(e){const off=[];v.replace(/\S+/g,(m,k)=>{off.push(k);return m});
+  if(e.e==='inv'){add(' '.repeat(prompt(S).length+off[e.i+(dof?1:0)])+'^');add(BAD)}
+  else if(e.e==='amb')add('% Ambiguous command:  "'+raw+'"');
+  else add('% Incomplete command.')}
+ else if(o)add(o);
+ setPr();chk()}
+cmd.addEventListener('keydown',e=>{
+ if(e.key==='Enter'){const v=cmd.value;cmd.value='';go(v)}
+ else if(e.key==='Tab'){e.preventDefault();tab()}
+ else if(e.key==='ArrowUp'){if(hi>0){hi--;cmd.value=hist[hi];e.preventDefault()}}
+ else if(e.key==='ArrowDown'){hi=Math.min(hi+1,hist.length);cmd.value=hist[hi]||'';e.preventDefault()}
+ else if(e.key==='z'&&e.ctrlKey){e.preventDefault();if(fam.includes(S.mode)){add(prompt(S)+'^Z');S.mode='priv';S.ctx=null;setPr();chk()}}});
+document.addEventListener('click',()=>{if(!getSelection().toString())cmd.focus()});
+{const t=' Cisco IOS CLI ',w='+'+'-'.repeat(t.length)+'+';[w,'|'+t+'|',w].forEach(l=>add(l,'c'));add('type :help for help, :fs for full screen.','m')}
+load(0,true);
+</script>
+</body>
+</html>
